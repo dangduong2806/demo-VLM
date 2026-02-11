@@ -1,11 +1,9 @@
 from typing import Dict, Type
-from .base_vlm import BaseVLM
+from models.base_vlm import BaseVLM
 from .llava_wrapper import LLaVAModel
-from .qwen_wrapper import QwenVLModel  # Implement similarly
 
 MODEL_REGISTRY: Dict[str, Type[BaseVLM]] = {
-    "llava": LLaVAModel,
-    "qwen": QwenVLModel,
+    "llava": LLaVAModel
     # Add more models here
 }
 
