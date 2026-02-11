@@ -16,8 +16,8 @@ class VLMTrainer:
     
     def setup(self):
         """Setup model, data, trainer"""
-        from ..models.model_registry import build_model
-        from ..data.wad_dataset import build_dataset, DataCollator
+        from models.model_registry import build_model
+        from data.wad_dataset import build_dataset, DataCollator
         from .callbacks import MemoryOptimizationCallback, ExperimentTrackingCallback
         
         # Build model
