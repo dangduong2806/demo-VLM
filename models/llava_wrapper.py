@@ -5,7 +5,7 @@ from transformers import (
 
 from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
 import torch
-from src.models.base_vlm import BaseVLM
+from models.base_vlm import BaseVLM
 
 class LLaVAModel(BaseVLM):
     """LLaVA-OneVision model wrapper"""
