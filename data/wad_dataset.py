@@ -11,6 +11,12 @@ from torch.nn.utils.rnn import pad_sequence
 import torch
 from typing import List, Dict, Any
 
+
+from datasets import load_dataset
+from collections import defaultdict
+import pickle
+import os
+
 from sklearn.model_selection import train_test_split
 
 from .preprocessing import POLMData, construct_prompt, map_metadata_to_ground_truth
@@ -106,117 +112,218 @@ class WADDataset(Dataset):
             selected.append(available_frames[-1])
         return selected[:num_frames]
 
-    def __getitem__(self, idx):
-        sample = self.metadata[idx]
-        frame_path = sample['frame_path']
+    # def __getitem__(self, idx):
+    #     sample = self.metadata[idx]
+    #     frame_path = sample['frame_path']
         
-        # 1. Load Data
-        frame_ids = self._select_frames_safe(frame_path, num_frames=self.num_frames)
-        frames = self._load_frames(frame_path, frame_ids)
-        polm_list = self._load_bboxes(frame_path, frame_ids)
+    #     # 1. Load Data
+    #     frame_ids = self._select_frames_safe(frame_path, num_frames=self.num_frames)
+    #     frames = self._load_frames(frame_path, frame_ids)
+    #     polm_list = self._load_bboxes(frame_path, frame_ids)
         
-        # 2. Tạo Text
-        prompt_text = construct_prompt(polm_list, num_images=self.num_frames)
-        ground_truth_dict = map_metadata_to_ground_truth(sample)
+    #     # 2. Tạo Text
+    #     prompt_text = construct_prompt(polm_list, num_images=self.num_frames)
+    #     ground_truth_dict = map_metadata_to_ground_truth(sample)
         
-        # SỬA ĐOẠN NÀY: Thêm Format ChatML cho Qwen
-        # Qwen template: <|im_start|>user\n...<|im_end|>\n<|im_start|>assistant\n...
-        # 1. format prompt (user side)
-        user_prompt = f"<|im_start|>user\n{prompt_text}<|im_end|>\n<|im_start|>assistant\n"
-        #2. forrmat answer (assistant side)
-        assistant_answer = ground_truth_dict.to_json() + "<|im_end|>" + self.tokenizer.eos_token
+    #     # SỬA ĐOẠN NÀY: Thêm Format ChatML cho Qwen
+    #     # Qwen template: <|im_start|>user\n...<|im_end|>\n<|im_start|>assistant\n...
+    #     # 1. format prompt (user side)
+    #     user_prompt = f"<|im_start|>user\n{prompt_text}<|im_end|>\n<|im_start|>assistant\n"
+    #     #2. forrmat answer (assistant side)
+    #     assistant_answer = ground_truth_dict.to_json() + "<|im_end|>" + self.tokenizer.eos_token
 
-        # 3. Xử lý Prompt + Image qua Processor
-        # Lưu ý: padding=False để tự xử lý ghép chuỗi thủ công cho chính xác
-        inputs = self.processor(
-            text=user_prompt,
-            images=frames,
-            return_tensors="pt",
-            truncation=False,  # <--- THÊM DÒNG NÀY (Bắt buộc): Cấm processor tự cắt
-            padding=False      # <--- THÊM DÒNG NÀY: Để mình tự xử lý padding sau
-        )
+    #     # 3. Xử lý Prompt + Image qua Processor
+    #     # Lưu ý: padding=False để tự xử lý ghép chuỗi thủ công cho chính xác
+    #     inputs = self.processor(
+    #         text=user_prompt,
+    #         images=frames,
+    #         return_tensors="pt",
+    #         truncation=False,  # <--- THÊM DÒNG NÀY (Bắt buộc): Cấm processor tự cắt
+    #         padding=False      # <--- THÊM DÒNG NÀY: Để mình tự xử lý padding sau
+    #     )
         
-        debug_pixel_values = inputs['pixel_values']
+    #     debug_pixel_values = inputs['pixel_values']
         
-        # In ra màn hình console
-        print(f"\n[DEBUG IMAGE INFO]")
-        print(f" - Shape gốc: {debug_pixel_values.shape}")
-        # Shape thường là: (Batch, Num_Crops, Channels, Height, Width)
-        # Ví dụ: torch.Size([1, 3, 3, 384, 384])
+    #     # In ra màn hình console
+    #     print(f"\n[DEBUG IMAGE INFO]")
+    #     print(f" - Shape gốc: {debug_pixel_values.shape}")
+    #     # Shape thường là: (Batch, Num_Crops, Channels, Height, Width)
+    #     # Ví dụ: torch.Size([1, 3, 3, 384, 384])
         
-        if len(debug_pixel_values.shape) == 5:
-            n_crops = debug_pixel_values.shape[1]
-            h = debug_pixel_values.shape[3]
-            w = debug_pixel_values.shape[4]
-            print(f" - Số lượng mảnh (Crops): {n_crops}")
-            print(f" - Kích thước mỗi mảnh: {h} x {w}")
-        else:
-            print(f" - Shape lạ: {debug_pixel_values.shape}")
-        # Lấy các Tensor ra khỏi batch dimension (vì processor trả về batch=1)
-        prompt_input_ids = inputs['input_ids'].squeeze(0)
-        prompt_attention_mask = inputs['attention_mask'].squeeze(0)
-        pixel_values = inputs['pixel_values'].squeeze(0)
+    #     if len(debug_pixel_values.shape) == 5:
+    #         n_crops = debug_pixel_values.shape[1]
+    #         h = debug_pixel_values.shape[3]
+    #         w = debug_pixel_values.shape[4]
+    #         print(f" - Số lượng mảnh (Crops): {n_crops}")
+    #         print(f" - Kích thước mỗi mảnh: {h} x {w}")
+    #     else:
+    #         print(f" - Shape lạ: {debug_pixel_values.shape}")
+    #     # Lấy các Tensor ra khỏi batch dimension (vì processor trả về batch=1)
+    #     prompt_input_ids = inputs['input_ids'].squeeze(0)
+    #     prompt_attention_mask = inputs['attention_mask'].squeeze(0)
+    #     pixel_values = inputs['pixel_values'].squeeze(0)
         
-        # 4. Tokenize Answer (Câu trả lời)
-        answer_tokens = self.tokenizer(
-            assistant_answer,
-            return_tensors="pt",
-            add_special_tokens=False, # Không thêm BOS nữa vì đã có ở Prompt rồi
-            truncation=True,
-            max_length=256 # Giới hạn độ dài câu trả lời để tiết kiệm bộ nhớ
-        )
-        answer_input_ids = answer_tokens['input_ids'].squeeze(0)
+    #     # 4. Tokenize Answer (Câu trả lời)
+    #     answer_tokens = self.tokenizer(
+    #         assistant_answer,
+    #         return_tensors="pt",
+    #         add_special_tokens=False, # Không thêm BOS nữa vì đã có ở Prompt rồi
+    #         truncation=True,
+    #         max_length=256 # Giới hạn độ dài câu trả lời để tiết kiệm bộ nhớ
+    #     )
+    #     answer_input_ids = answer_tokens['input_ids'].squeeze(0)
         
-        # 5. GHÉP CHUỖI (CONCATENATE) -> Logic Training Chuẩn
-        input_ids = torch.cat([prompt_input_ids, answer_input_ids], dim=0)
+    #     # 5. GHÉP CHUỖI (CONCATENATE) -> Logic Training Chuẩn
+    #     input_ids = torch.cat([prompt_input_ids, answer_input_ids], dim=0)
         
-        # Chú ý
-        # Tạo Attention Mask (1 cho cả prompt và answer)
-        attention_mask = torch.cat([
-            prompt_attention_mask, 
-            torch.ones_like(answer_input_ids)
-        ], dim=0)
+    #     # Chú ý
+    #     # Tạo Attention Mask (1 cho cả prompt và answer)
+    #     attention_mask = torch.cat([
+    #         prompt_attention_mask, 
+    #         torch.ones_like(answer_input_ids)
+    #     ], dim=0)
         
-        # Chú ý
-        # Tạo Labels
-        # - Vùng Prompt: -100 (Model không cần học lại câu hỏi)
-        # - Vùng Answer: ID của token (Model phải đoán câu trả lời)
-        labels = torch.cat([
-            torch.full((len(prompt_input_ids),), -100, dtype=torch.long),
-            answer_input_ids
-        ], dim=0)
+    #     # Chú ý
+    #     # Tạo Labels
+    #     # - Vùng Prompt: -100 (Model không cần học lại câu hỏi)
+    #     # - Vùng Answer: ID của token (Model phải đoán câu trả lời)
+    #     labels = torch.cat([
+    #         torch.full((len(prompt_input_ids),), -100, dtype=torch.long),
+    #         answer_input_ids
+    #     ], dim=0)
         
-        # 6. Cắt ngắn nếu quá dài (Tránh OOM và tiết kiệm tính toán)
-        MAX_TOTAL_LEN = 3072 # Bạn có thể giảm xuống 1024 nếu muốn nhanh hơn nữa
-        if len(input_ids) > MAX_TOTAL_LEN:
-            input_ids = input_ids[:MAX_TOTAL_LEN]
-            attention_mask = attention_mask[:MAX_TOTAL_LEN]
-            labels = labels[:MAX_TOTAL_LEN]
+    #     # 6. Cắt ngắn nếu quá dài (Tránh OOM và tiết kiệm tính toán)
+    #     MAX_TOTAL_LEN = 3072 # Bạn có thể giảm xuống 1024 nếu muốn nhanh hơn nữa
+    #     if len(input_ids) > MAX_TOTAL_LEN:
+    #         input_ids = input_ids[:MAX_TOTAL_LEN]
+    #         attention_mask = attention_mask[:MAX_TOTAL_LEN]
+    #         labels = labels[:MAX_TOTAL_LEN]
 
-        # 7. Đóng gói kết quả
-        return_dict = {
-            'input_ids': input_ids,
-            'attention_mask': attention_mask,
-            'pixel_values': pixel_values,
-            'labels': labels
-        }
+    #     # 7. Đóng gói kết quả
+    #     return_dict = {
+    #         'input_ids': input_ids,
+    #         'attention_mask': attention_mask,
+    #         'pixel_values': pixel_values,
+    #         'labels': labels
+    #     }
         
-        # Copy các thông tin phụ (quan trọng cho model Qwen/LLaVA)
-        if 'image_sizes' in inputs:
-            return_dict['image_sizes'] = inputs['image_sizes'].squeeze(0)
-        if 'image_grid_thw' in inputs:
-            return_dict['image_grid_thw'] = inputs['image_grid_thw'].squeeze(0)
+    #     # Copy các thông tin phụ (quan trọng cho model Qwen/LLaVA)
+    #     if 'image_sizes' in inputs:
+    #         return_dict['image_sizes'] = inputs['image_sizes'].squeeze(0)
+    #     if 'image_grid_thw' in inputs:
+    #         return_dict['image_grid_thw'] = inputs['image_grid_thw'].squeeze(0)
             
-        return return_dict
+    #     return return_dict
+    def __getitem__(self, idx):
+        item = self.metadata[idx]
+        folder_id = item['folder_id']
+        frame_id = item['frame_id']
 
+        # Load ảnh
+        if folder_id in self.frame_index and frame_id in self.frame_index[folder_id]:
+            frame_path = self.frame_index[folder_id][frame_id]
+            # load ảnh
+            images = self._load_frames(frame_path=frame_path, frame_ids=[frame_id])
+            image = images[0]
+        else:
+            # Skip nếu lỗi index
+            return self.__getitem__((idx + 1) % len(self))
+        
+        # 2. Chuẩn bị Prompt & Answer
+        # Lấy thông tin Ground Truth
+        gt_data = map_metadata_to_ground_truth(item)
+
+        # Tạo nội dung hội thoại chuẩn cho Processor
+        # Prompt user bao gồm: Placeholder Ảnh + Instruction
+        user_content = [
+            {"type": "image"},
+            {"type": "text", "text": gt_data.instruction if gt_data.instruction else "Describe the scene details for navigation."}
+        ]
+
+        # Câu trả lời (Target) là JSON
+        assistant_content = [
+            {"type": "text", "text": gt_data.to_json()}
+        ]
+
+        # --- KEY CHANGE: Tách Prompt và Full để tính Mask ---
+        
+        # A. Prompt-only conversation (User turn)
+        # Dùng để tính độ dài phần không cần học
+        conversation_prompt_only = [
+            {"role": "user", "content": user_content},
+        ]
+
+        conversation_full = [
+            {"role": "user", "content": user_content},
+            {"role": "assistant", "content": assistant_content},
+        ]
+
+        # 3. Dùng Processor để xử lý toàn bộ (Tokenize Text + Process Image)
+        # Hàm này tự động tính toán số token ảnh (features) chính xác
+        try:
+            # 3. Tính toán Mask (Bỏ qua prompt)
+            # Bước này chỉ chạy tokenizer để lấy độ dài, không padding
+            prompt_inputs = self.processor.apply_chat_template(
+                conversation_prompt_only,
+                add_generation_prompt=True, # Thêm header "Assistant:" vào phần prompt để mask luôn nó
+                tokenize=True,
+                return_dict=True,
+                return_tensors="pt",
+                images=[image], 
+                padding=False, # Không pad để lấy độ dài thật
+            )
+            
+            prompt_len = prompt_inputs["input_ids"].shape[1]
+
+            # 4. Tạo Full Inputs (có Padding)
+            inputs = self.processor.apply_chat_template(
+                conversation_full,
+                add_generation_prompt=False,
+                tokenize=True,
+                return_dict=True,
+                return_tensors="pt",
+                images=[image], 
+                padding="max_length",
+                truncation=True,
+                max_length=2048,
+            )
+            
+        except ValueError as e:
+            print(f"Error processing image {idx}: {e}")
+            return self.__getitem__((idx + 1) % len(self))
+        
+        # Xử lý output
+        input_ids = inputs["input_ids"].squeeze(0)
+        attention_mask = inputs["attention_mask"].squeeze(0)
+        pixel_values = inputs["pixel_values"].squeeze(0)
+        image_sizes = inputs["image_sizes"].squeeze(0) if "image_sizes" in inputs else torch.tensor([image.size[::-1]])
+
+        # Tạo Labels: Clone từ input_ids
+        # (Model sẽ học cả prompt và answer - đơn giản và hiệu quả để chạy bước đầu)
+        labels = input_ids.clone()
+
+        # Mask 1: Che phần Prompt (User Instruction + Image tokens)
+        # Gán -100 cho toàn bộ token từ đầu đến hết phần prompt
+        # Lưu ý: Nếu prompt_len > max_length thì toàn bộ labels sẽ bị mask (điều này ok, loss=0, model skip mẫu này)
+        if prompt_len < labels.shape[0]:
+            labels[:prompt_len] = -100
+        else:
+            labels[:] = -100 # Trường hợp hiếm: prompt quá dài bị cắt cụt hết answer
+        
+        # Mask 2: Che phần Padding
+        if self.tokenizer.pad_token_id is not None:
+            labels[input_ids == self.tokenizer.pad_token_id] = -100
+        
+        return {
+            "input_ids": input_ids,
+            "attention_mask": attention_mask,
+            "pixel_values": pixel_values,
+            "image_sizes": image_sizes,
+            "labels": labels
+        }
 
 def build_dataset(config: Dict, processor, tokenizer):
     """Build train/eval datasets from config"""
-    
-    from datasets import load_dataset
-    from collections import defaultdict
-    import pickle
-    import os
     
     # Load metadata
     print("Loading metadata...")
@@ -291,39 +398,46 @@ def build_dataset(config: Dict, processor, tokenizer):
 class DataCollator:
     tokenizer: any
 
+    # def __call__(self, features: List[Dict[str, Any]]) -> Dict[str, Any]:
+    #     # 1. Tách các thành phần ra khỏi list of dicts
+    #     input_ids = [feature['input_ids'] for feature in features]
+    #     labels = [feature['labels'] for feature in features]
+    #     attention_mask = [feature['attention_mask'] for feature in features]
+    #     pixel_values = [feature['pixel_values'] for feature in features]
+
+    #     # Padding cho text (Input IDs & Attention Mask)
+    #     # batch_first=True -> (Batch, Seq_Len)
+    #     input_ids_padded = pad_sequence(input_ids, batch_first=True, padding_value=self.tokenizer.pad_token_id)
+    #     attention_mask_padded = pad_sequence(attention_mask, batch_first=True, padding_value=0)
+
+    #     # Padding cho labels
+    #     # Quan trọng: Padding bằng -100 để Model không tính loss vào phần padding này
+
+    #     labels_padded = pad_sequence(labels, batch_first=True, padding_value=-100)
+
+    #     # 4. Stack Images
+    #     # Pixel values của LLaVA thường là 4D (1, C, H, W) hoặc 5D (1, Crops, C, H, W)
+    #     # Ta cần stack lại thành (Batch, C, H, W) hoặc (Batch, Crops, C, H, W)
+    #     batch_pixel_values = torch.stack(pixel_values, dim=0)
+
+    #     batch = {
+    #         "input_ids": input_ids_padded,
+    #         "attention_mask": attention_mask_padded,
+    #         "labels": labels_padded,
+    #         "pixel_values": batch_pixel_values
+    #     }
+
+    #     # 5. Xử lý các trường phụ của LLava (nếu có)
+    #     if "image_sizes" in features[0]:
+    #         batch["image_sizes"] = torch.stack([feature["image_sizes"] for feature in features])
+    #     if "image_grid_thw" in features[0]:
+    #         batch["image_grid_thw"] = torch.stack([feature["image_grid_thw"] for feature in features])
+
+    #     return batch
     def __call__(self, features: List[Dict[str, Any]]) -> Dict[str, Any]:
-        # 1. Tách các thành phần ra khỏi list of dicts
-        input_ids = [feature['input_ids'] for feature in features]
-        labels = [feature['labels'] for feature in features]
-        attention_mask = [feature['attention_mask'] for feature in features]
-        pixel_values = [feature['pixel_values'] for feature in features]
-
-        # Padding cho text (Input IDs & Attention Mask)
-        # batch_first=True -> (Batch, Seq_Len)
-        input_ids_padded = pad_sequence(input_ids, batch_first=True, padding_value=self.tokenizer.pad_token_id)
-        attention_mask_padded = pad_sequence(attention_mask, batch_first=True, padding_value=0)
-
-        # Padding cho labels
-        # Quan trọng: Padding bằng -100 để Model không tính loss vào phần padding này
-
-        labels_padded = pad_sequence(labels, batch_first=True, padding_value=-100)
-
-        # 4. Stack Images
-        # Pixel values của LLaVA thường là 4D (1, C, H, W) hoặc 5D (1, Crops, C, H, W)
-        # Ta cần stack lại thành (Batch, C, H, W) hoặc (Batch, Crops, C, H, W)
-        batch_pixel_values = torch.stack(pixel_values, dim=0)
-
-        batch = {
-            "input_ids": input_ids_padded,
-            "attention_mask": attention_mask_padded,
-            "labels": labels_padded,
-            "pixel_values": batch_pixel_values
-        }
-
-        # 5. Xử lý các trường phụ của LLava (nếu có)
-        if "image_sizes" in features[0]:
-            batch["image_sizes"] = torch.stack([feature["image_sizes"] for feature in features])
-        if "image_grid_thw" in features[0]:
-            batch["image_grid_thw"] = torch.stack([feature["image_grid_thw"] for feature in features])
-
+        batch = {}
+        for key in features[0].keys():
+            if features[0][key] is not None:
+                # Stack các tensor đã được pad sẵn trong __getitem__
+                batch[key] = torch.stack([f[key] for f in features])
         return batch
