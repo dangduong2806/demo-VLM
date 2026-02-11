@@ -8,8 +8,8 @@ import argparse
 import sys
 sys.path.append('.')
 
-from src.training.trainer import VLMTrainer
-from src.training.utils import set_seed, print_device_info
+from training.trainer import VLMTrainer
+from training.utils import set_seed, print_device_info
 
 def main():
     parser = argparse.ArgumentParser(description='Train VLM model')
